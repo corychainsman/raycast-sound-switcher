@@ -22,8 +22,8 @@
   "commands": [
     {
       "name": "index",
-      "title": "Sound Switcher",
-      "description": "Switch input and output audio devices together",
+      "title": "Switch Sound Device",
+      "description": "Switch sound input and output together or separately",
       "icon": "command-icon.png",
       "mode": "view"
     }
