@@ -22,6 +22,8 @@ export type AudioDevicePair = {
 
 export type AudioDeviceState = {
   pairs: AudioDevicePair[];
+  inputDevices: string[];
+  outputDevices: string[];
   currentInput?: string;
   currentOutput?: string;
   currentPair?: AudioDevicePair;
@@ -158,11 +160,15 @@ export function buildAudioDeviceState(
   }
 
   pairs.sort((left, right) => left.displayName.localeCompare(right.displayName));
+  const sortedInputDevices = [...inputDevices].sort((left, right) => left.localeCompare(right));
+  const sortedOutputDevices = [...outputDevices].sort((left, right) => left.localeCompare(right));
 
   const currentPair = pairs.find((pair) => pair.isCurrent);
 
   return {
     pairs,
+    inputDevices: sortedInputDevices,
+    outputDevices: sortedOutputDevices,
     currentInput,
     currentOutput,
     currentPair,

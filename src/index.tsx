@@ -1,7 +1,8 @@
-import { Action, ActionPanel, closeMainWindow, Icon, List, LocalStorage, showToast, Toast } from "@raycast/api";
+import { Action, ActionPanel, closeMainWindow, Color, Icon, List, LocalStorage, showToast, Toast } from "@raycast/api";
 import { useEffect, useState } from "react";
 import {
   AudioDeviceState,
+  DeviceType,
   SwitchAudioSourceMissingError,
   createSwitchAudioSourceBackend,
   getAudioDeviceState,
@@ -15,6 +16,7 @@ type ViewState =
   | { status: "ready"; audio: AudioDeviceState; isRefreshing: boolean };
 
 const AUDIO_DEVICE_STATE_CACHE_KEY = "audio-device-state";
+const currentDeviceAccessory = [{ icon: { source: Icon.CheckCircle, tintColor: Color.Green } }];
 
 export default function Command() {
   const [state, setState] = useState<ViewState>({ status: "loading" });
@@ -84,7 +86,7 @@ export default function Command() {
   const audio = state.status === "ready" ? state.audio : undefined;
 
   return (
-    <List isLoading={isLoading} searchBarPlaceholder="Search paired sound devices">
+    <List isLoading={isLoading} searchBarPlaceholder="Search sound devices" filtering={{ keepSectionOrder: true }}>
       {audio?.isMixedCurrent ? (
         <List.Section
           title="Current Audio"
@@ -92,13 +94,13 @@ export default function Command() {
         />
       ) : null}
 
-      <List.Section title="Devices">
+      <List.Section title="Unified Devices" subtitle={`${audio?.pairs.length ?? 0} devices`}>
         {audio?.pairs.map((pair) => (
           <List.Item
-            key={pair.id}
+            key={`unified:${pair.id}`}
             title={pair.displayName}
             subtitle={`${pair.inputName} + ${pair.outputName}`}
-            accessories={pair.isCurrent ? [{ icon: Icon.CheckCircle, tooltip: "Current input and output" }] : undefined}
+            accessories={pair.isCurrent ? currentDeviceAccessory : undefined}
             actions={
               <ActionPanel>
                 <Action
@@ -132,8 +134,70 @@ export default function Command() {
           />
         ))}
       </List.Section>
+
+      <List.Section title="Outputs" subtitle={`${audio?.outputDevices.length ?? 0} devices`}>
+        {audio?.outputDevices.map((device) => (
+          <List.Item
+            key={`output:${device}`}
+            title={device}
+            accessories={device === audio.currentOutput ? currentDeviceAccessory : undefined}
+            actions={
+              <ActionPanel>
+                <Action
+                  title="Switch Output"
+                  icon={Icon.ArrowClockwise}
+                  onAction={() => void switchSingleAudioDevice(audio, "output", device)}
+                />
+                <Action title="Refresh" icon={Icon.ArrowClockwise} onAction={() => void reload()} />
+              </ActionPanel>
+            }
+          />
+        ))}
+      </List.Section>
+
+      <List.Section title="Inputs" subtitle={`${audio?.inputDevices.length ?? 0} devices`}>
+        {audio?.inputDevices.map((device) => (
+          <List.Item
+            key={`input:${device}`}
+            title={device}
+            accessories={device === audio.currentInput ? currentDeviceAccessory : undefined}
+            actions={
+              <ActionPanel>
+                <Action
+                  title="Switch Input"
+                  icon={Icon.ArrowClockwise}
+                  onAction={() => void switchSingleAudioDevice(audio, "input", device)}
+                />
+                <Action title="Refresh" icon={Icon.ArrowClockwise} onAction={() => void reload()} />
+              </ActionPanel>
+            }
+          />
+        ))}
+      </List.Section>
     </List>
   );
+
+  async function switchSingleAudioDevice(audio: AudioDeviceState, type: DeviceType, device: string) {
+    const toast = await showToast({
+      style: Toast.Style.Animated,
+      title: `Switching ${type} to ${device}`,
+    });
+
+    try {
+      const backend = await createSwitchAudioSourceBackend();
+      await backend.setDevice(type, device);
+      const updatedAudio = markSingleAudioDeviceCurrent(audio, type, device);
+      setState({ status: "ready", audio: updatedAudio, isRefreshing: false });
+      void cacheAudioDeviceState(updatedAudio);
+      toast.style = Toast.Style.Success;
+      toast.title = `Switched ${type} to ${device}`;
+      await closeMainWindow({ clearRootSearch: true });
+    } catch (error) {
+      toast.style = Toast.Style.Failure;
+      toast.title = `Could not switch ${type} to ${device}`;
+      toast.message = error instanceof Error ? error.message : String(error);
+    }
+  }
 }
 
 async function getCachedAudioDeviceState(): Promise<AudioDeviceState | undefined> {
@@ -156,7 +220,14 @@ function isAudioDeviceState(value: unknown): value is AudioDeviceState {
   if (!value || typeof value !== "object") return false;
 
   const candidate = value as Partial<AudioDeviceState>;
-  return Array.isArray(candidate.pairs) && candidate.pairs.every(isAudioDevicePair);
+  return (
+    Array.isArray(candidate.pairs) &&
+    candidate.pairs.every(isAudioDevicePair) &&
+    Array.isArray(candidate.inputDevices) &&
+    candidate.inputDevices.every((device) => typeof device === "string") &&
+    Array.isArray(candidate.outputDevices) &&
+    candidate.outputDevices.every((device) => typeof device === "string")
+  );
 }
 
 function isAudioDevicePair(value: unknown) {
@@ -183,5 +254,24 @@ function markAudioPairCurrent(audio: AudioDeviceState, pairId: string): AudioDev
     currentOutput: currentPair?.outputName,
     currentPair,
     isMixedCurrent: false,
+  };
+}
+
+function markSingleAudioDeviceCurrent(audio: AudioDeviceState, type: DeviceType, device: string): AudioDeviceState {
+  const currentInput = type === "input" ? device : audio.currentInput;
+  const currentOutput = type === "output" ? device : audio.currentOutput;
+  const pairs = audio.pairs.map((pair) => ({
+    ...pair,
+    isCurrent: pair.inputName === currentInput && pair.outputName === currentOutput,
+  }));
+  const currentPair = pairs.find((pair) => pair.isCurrent);
+
+  return {
+    ...audio,
+    pairs,
+    currentInput,
+    currentOutput,
+    currentPair,
+    isMixedCurrent: Boolean(currentInput && currentOutput && !currentPair),
   };
 }

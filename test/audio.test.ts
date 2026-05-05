@@ -32,6 +32,13 @@ describe("buildAudioDeviceState", () => {
     const state = buildAudioDeviceState(inputs, outputs, "MacBook Air Microphone", "MacBook Air Speakers");
 
     expect(state.pairs.map((pair) => pair.displayName)).toEqual(["MacBook Air", "Poly Blackwire 3325 Series"]);
+    expect(state.inputDevices).toEqual(["BlackHole 2ch", "MacBook Air Microphone", "Poly Blackwire 3325 Series"]);
+    expect(state.outputDevices).toEqual([
+      "BlackHole 2ch",
+      "DELL U3415W",
+      "MacBook Air Speakers",
+      "Poly Blackwire 3325 Series",
+    ]);
   });
 
   it("keeps alphabetical order while marking the current paired device", () => {
