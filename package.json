@@ -2,9 +2,16 @@
   "$schema": "https://www.raycast.com/schemas/extension.json",
   "name": "sound-switcher",
   "title": "Sound Switcher",
-  "description": "Switch macOS input and output audio devices together.",
+  "description": "Switch macOS input and output sound devices together, or control them separately.",
   "icon": "command-icon.png",
   "author": "corychainsman",
+  "keywords": [
+    "audio",
+    "sound",
+    "input",
+    "output",
+    "device"
+  ],
   "license": "MIT",
   "categories": [
     "System"
@@ -25,6 +32,7 @@
     "build": "ray build -e dist",
     "dev": "ray develop",
     "lint": "ray lint",
+    "publish": "npx @raycast/api@latest publish",
     "test": "vitest run"
   },
   "dependencies": {
