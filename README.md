@@ -2,18 +2,6 @@
 
 Switch macOS input and output sound devices together, or control them separately from Raycast.
 
-## Requirements
-
-This extension uses `SwitchAudioSource` to read and change macOS sound devices.
-
-Install it with Homebrew:
-
-```sh
-brew install switchaudio-osx
-```
-
-The extension checks the current `PATH`, `/opt/homebrew/bin`, and `/usr/local/bin` for the `SwitchAudioSource` binary.
-
 ## Usage
 
 Open **Sound Switcher** in Raycast to see:
@@ -26,12 +14,6 @@ The current device in each section is shown with a green check mark. Devices are
 
 ## Troubleshooting
 
-If Raycast says `SwitchAudioSource is not installed`, confirm the binary is available:
+Sound Switcher includes a bundled macOS audio helper from [`@spotxyz/macos-audio-devices`](https://www.npmjs.com/package/@spotxyz/macos-audio-devices). No Homebrew setup is required.
 
-```sh
-which SwitchAudioSource
-SwitchAudioSource -a -t output
-SwitchAudioSource -a -t input
-```
-
-If Homebrew installed `SwitchAudioSource` somewhere else, make sure that directory is available in the environment Raycast uses.
+If Raycast says the audio helper is missing, rebuild or reinstall the extension so the packaged helper is restored.

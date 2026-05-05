@@ -1,20 +1,26 @@
 import { execFile } from "node:child_process";
-import { access } from "node:fs/promises";
-import { delimiter } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const SWITCH_AUDIO_SOURCE_PATHS = [
-  "/opt/homebrew/bin/SwitchAudioSource",
-  "/usr/local/bin/SwitchAudioSource",
-] as const;
+const AUDIO_DEVICES_BINARY = "audio-devices";
 
 export type DeviceType = "input" | "output";
+
+export type AudioDevice = {
+  id: string;
+  backendId: number;
+  uid: string;
+  name: string;
+  type: DeviceType;
+};
 
 export type AudioDevicePair = {
   id: string;
   displayName: string;
+  input: AudioDevice;
+  output: AudioDevice;
   inputName: string;
   outputName: string;
   isCurrent: boolean;
@@ -22,92 +28,101 @@ export type AudioDevicePair = {
 
 export type AudioDeviceState = {
   pairs: AudioDevicePair[];
-  inputDevices: string[];
-  outputDevices: string[];
-  currentInput?: string;
-  currentOutput?: string;
+  inputDevices: AudioDevice[];
+  outputDevices: AudioDevice[];
+  currentInput?: AudioDevice;
+  currentOutput?: AudioDevice;
   currentPair?: AudioDevicePair;
   isMixedCurrent: boolean;
 };
 
-export class SwitchAudioSourceMissingError extends Error {
+export class AudioDevicesBackendMissingError extends Error {
   constructor() {
-    super("SwitchAudioSource is not installed");
-    this.name = "SwitchAudioSourceMissingError";
+    super("Bundled audio device helper is missing");
+    this.name = "AudioDevicesBackendMissingError";
   }
 }
 
-export class SwitchAudioSourceCommandError extends Error {
+export class AudioDevicesCommandError extends Error {
   constructor(
     readonly operation: string,
     readonly cause: unknown,
   ) {
-    super(`SwitchAudioSource failed while trying to ${operation}`);
-    this.name = "SwitchAudioSourceCommandError";
+    super(`Audio device helper failed while trying to ${operation}`);
+    this.name = "AudioDevicesCommandError";
   }
 }
 
 type CommandRunner = (file: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
 
 export type AudioBackend = {
-  listDevices(type: DeviceType): Promise<string[]>;
-  getCurrentDevice(type: DeviceType): Promise<string | undefined>;
-  setDevice(type: DeviceType, name: string): Promise<void>;
+  listDevices(type: DeviceType): Promise<AudioDevice[]>;
+  getCurrentDevice(type: DeviceType): Promise<AudioDevice | undefined>;
+  setDevice(type: DeviceType, device: AudioDevice): Promise<void>;
 };
 
-export async function createSwitchAudioSourceBackend(runner: CommandRunner = execFileAsync): Promise<AudioBackend> {
-  const binary = await resolveSwitchAudioSource();
+type RawAudioDevice = {
+  id: number;
+  uid: string;
+  name: string;
+  isInput: boolean;
+  isOutput: boolean;
+};
 
+export async function createMacOSAudioDevicesBackend(
+  binary = join(process.cwd(), "assets", AUDIO_DEVICES_BINARY),
+  runner: CommandRunner = execFileAsync,
+): Promise<AudioBackend> {
   async function run(args: string[]) {
     try {
       return await runner(binary, args);
     } catch (error) {
-      throw new SwitchAudioSourceCommandError(args.join(" "), error);
+      if (isMissingBinaryError(error)) {
+        throw new AudioDevicesBackendMissingError();
+      }
+
+      throw new AudioDevicesCommandError(args.join(" "), error);
     }
   }
 
   return {
     async listDevices(type) {
-      const result = await run(["-a", "-t", type]);
-      return parseDeviceList(result.stdout);
+      const result = await run(["list", `--${type}`, "--json"]);
+      return parseAudioDevices(result.stdout, type);
     },
     async getCurrentDevice(type) {
-      const result = await run(["-c", "-t", type]);
-      return parseDeviceList(result.stdout)[0];
+      const result = await run([type, "get", "--json"]);
+      return parseAudioDevice(result.stdout, type);
     },
-    async setDevice(type, name) {
-      await run(["-s", name, "-t", type]);
+    async setDevice(type, device) {
+      await run([type, "set", String(device.backendId)]);
     },
   };
 }
 
-export async function resolveSwitchAudioSource(envPath = process.env.PATH ?? ""): Promise<string> {
-  for (const directory of envPath.split(delimiter).filter(Boolean)) {
-    const candidate = `${directory}/SwitchAudioSource`;
-    if (await canAccess(candidate)) return candidate;
-  }
-
-  for (const candidate of SWITCH_AUDIO_SOURCE_PATHS) {
-    if (await canAccess(candidate)) return candidate;
-  }
-
-  throw new SwitchAudioSourceMissingError();
+function isMissingBinaryError(error: unknown) {
+  return (
+    typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT"
+  );
 }
 
-async function canAccess(path: string) {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
+function parseAudioDevices(stdout: string, type: DeviceType): AudioDevice[] {
+  return (JSON.parse(stdout) as RawAudioDevice[]).map((device) => mapAudioDevice(device, type));
 }
 
-export function parseDeviceList(stdout: string): string[] {
-  return stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+function parseAudioDevice(stdout: string, type: DeviceType): AudioDevice | undefined {
+  const rawDevice = JSON.parse(stdout) as RawAudioDevice | undefined;
+  return rawDevice ? mapAudioDevice(rawDevice, type) : undefined;
+}
+
+function mapAudioDevice(device: RawAudioDevice, type: DeviceType): AudioDevice {
+  return {
+    id: `${type}:${device.id}`,
+    backendId: device.id,
+    uid: device.uid,
+    name: device.name,
+    type,
+  };
 }
 
 export function normalizeDeviceName(name: string): string {
@@ -122,46 +137,46 @@ export function isVirtualDevice(name: string): boolean {
 }
 
 export function buildAudioDeviceState(
-  inputDevices: string[],
-  outputDevices: string[],
-  currentInput?: string,
-  currentOutput?: string,
+  inputDevices: AudioDevice[],
+  outputDevices: AudioDevice[],
+  currentInput?: AudioDevice,
+  currentOutput?: AudioDevice,
 ) {
-  const outputsByNormalizedName = new Map<string, string>();
+  const outputsByNormalizedName = new Map<string, AudioDevice>();
 
-  for (const outputName of outputDevices) {
-    const displayName = normalizeDeviceName(outputName);
-    if (!displayName || isVirtualDevice(outputName) || isVirtualDevice(displayName)) continue;
+  for (const output of outputDevices) {
+    const displayName = normalizeDeviceName(output.name);
+    if (!displayName || isVirtualDevice(output.name) || isVirtualDevice(displayName)) continue;
     if (!outputsByNormalizedName.has(displayName)) {
-      outputsByNormalizedName.set(displayName, outputName);
+      outputsByNormalizedName.set(displayName, output);
     }
   }
 
   const pairs: AudioDevicePair[] = [];
   const seenDisplayNames = new Set<string>();
 
-  for (const inputName of inputDevices) {
-    const displayName = normalizeDeviceName(inputName);
-    const outputName = outputsByNormalizedName.get(displayName);
+  for (const input of inputDevices) {
+    const displayName = normalizeDeviceName(input.name);
+    const output = outputsByNormalizedName.get(displayName);
 
-    if (!displayName || !outputName || seenDisplayNames.has(displayName)) continue;
-    if (isVirtualDevice(inputName) || isVirtualDevice(displayName)) continue;
+    if (!displayName || !output || seenDisplayNames.has(displayName)) continue;
+    if (isVirtualDevice(input.name) || isVirtualDevice(displayName)) continue;
 
     pairs.push({
-      id: displayName,
+      id: `${input.id}:${output.id}`,
       displayName,
-      inputName,
-      outputName,
-      isCurrent:
-        normalizeDeviceName(currentInput ?? "") === displayName &&
-        normalizeDeviceName(currentOutput ?? "") === displayName,
+      input,
+      output,
+      inputName: input.name,
+      outputName: output.name,
+      isCurrent: input.id === currentInput?.id && output.id === currentOutput?.id,
     });
     seenDisplayNames.add(displayName);
   }
 
   pairs.sort((left, right) => left.displayName.localeCompare(right.displayName));
-  const sortedInputDevices = [...inputDevices].sort((left, right) => left.localeCompare(right));
-  const sortedOutputDevices = [...outputDevices].sort((left, right) => left.localeCompare(right));
+  const sortedInputDevices = [...inputDevices].sort((left, right) => left.name.localeCompare(right.name));
+  const sortedOutputDevices = [...outputDevices].sort((left, right) => left.name.localeCompare(right.name));
 
   const currentPair = pairs.find((pair) => pair.isCurrent);
 
@@ -172,9 +187,7 @@ export function buildAudioDeviceState(
     currentInput,
     currentOutput,
     currentPair,
-    isMixedCurrent: Boolean(
-      currentInput && currentOutput && normalizeDeviceName(currentInput) !== normalizeDeviceName(currentOutput),
-    ),
+    isMixedCurrent: Boolean(currentInput && currentOutput && !currentPair),
   } satisfies AudioDeviceState;
 }
 
@@ -192,19 +205,19 @@ export async function getAudioDeviceState(backend: AudioBackend): Promise<AudioD
 export async function switchAudioDevicePair(
   backend: AudioBackend,
   pair: AudioDevicePair,
-  previousInput?: string,
-  previousOutput?: string,
+  previousInput?: AudioDevice,
+  previousOutput?: AudioDevice,
 ) {
   try {
-    await backend.setDevice("output", pair.outputName);
-    await backend.setDevice("input", pair.inputName);
+    await backend.setDevice("output", pair.output);
+    await backend.setDevice("input", pair.input);
   } catch (error) {
     await rollbackAudioDevices(backend, previousInput, previousOutput);
     throw error;
   }
 }
 
-async function rollbackAudioDevices(backend: AudioBackend, previousInput?: string, previousOutput?: string) {
+async function rollbackAudioDevices(backend: AudioBackend, previousInput?: AudioDevice, previousOutput?: AudioDevice) {
   await Promise.allSettled([
     previousOutput ? backend.setDevice("output", previousOutput) : Promise.resolve(),
     previousInput ? backend.setDevice("input", previousInput) : Promise.resolve(),

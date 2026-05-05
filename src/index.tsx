@@ -1,10 +1,23 @@
-import { Action, ActionPanel, closeMainWindow, Color, Icon, List, LocalStorage, showToast, Toast } from "@raycast/api";
+import { join } from "node:path";
+import {
+  Action,
+  ActionPanel,
+  closeMainWindow,
+  Color,
+  environment,
+  Icon,
+  List,
+  LocalStorage,
+  showToast,
+  Toast,
+} from "@raycast/api";
 import { useEffect, useState } from "react";
 import {
+  AudioDevice,
   AudioDeviceState,
+  AudioDevicesBackendMissingError,
   DeviceType,
-  SwitchAudioSourceMissingError,
-  createSwitchAudioSourceBackend,
+  createMacOSAudioDevicesBackend,
   getAudioDeviceState,
   switchAudioDevicePair,
 } from "./audio";
@@ -16,6 +29,7 @@ type ViewState =
   | { status: "ready"; audio: AudioDeviceState; isRefreshing: boolean };
 
 const AUDIO_DEVICE_STATE_CACHE_KEY = "audio-device-state";
+const AUDIO_DEVICES_BINARY = join(environment.assetsPath, "audio-devices");
 const currentDeviceAccessory = [{ icon: { source: Icon.CheckCircle, tintColor: Color.Green } }];
 
 export default function Command() {
@@ -29,12 +43,12 @@ export default function Command() {
     );
 
     try {
-      const backend = await createSwitchAudioSourceBackend();
+      const backend = await createMacOSAudioDevicesBackend(AUDIO_DEVICES_BINARY);
       const audio = await getAudioDeviceState(backend);
       setState({ status: "ready", audio, isRefreshing: false });
       void cacheAudioDeviceState(audio);
     } catch (error) {
-      if (error instanceof SwitchAudioSourceMissingError) {
+      if (error instanceof AudioDevicesBackendMissingError) {
         setState({ status: "missing-backend" });
       } else {
         setState({ status: "error", error: error instanceof Error ? error : new Error(String(error)) });
@@ -64,8 +78,8 @@ export default function Command() {
       <List isLoading={false}>
         <List.EmptyView
           icon={Icon.ExclamationMark}
-          title="SwitchAudioSource is not installed"
-          description="Install the required backend with: brew install switchaudio-osx"
+          title="Audio Device Helper is Missing"
+          description="Rebuild the extension to restore the bundled audio helper."
         />
       </List>
     );
@@ -90,7 +104,7 @@ export default function Command() {
       {audio?.isMixedCurrent ? (
         <List.Section
           title="Current Audio"
-          subtitle={`Input: ${audio.currentInput ?? "Unknown"} | Output: ${audio.currentOutput ?? "Unknown"}`}
+          subtitle={`Input: ${audio.currentInput?.name ?? "Unknown"} | Output: ${audio.currentOutput?.name ?? "Unknown"}`}
         />
       ) : null}
 
@@ -113,7 +127,7 @@ export default function Command() {
                     });
 
                     try {
-                      const backend = await createSwitchAudioSourceBackend();
+                      const backend = await createMacOSAudioDevicesBackend(AUDIO_DEVICES_BINARY);
                       await switchAudioDevicePair(backend, pair, audio.currentInput, audio.currentOutput);
                       const updatedAudio = markAudioPairCurrent(audio, pair.id);
                       setState({ status: "ready", audio: updatedAudio, isRefreshing: false });
@@ -138,9 +152,9 @@ export default function Command() {
       <List.Section title="Outputs" subtitle={`${audio?.outputDevices.length ?? 0} devices`}>
         {audio?.outputDevices.map((device) => (
           <List.Item
-            key={`output:${device}`}
-            title={device}
-            accessories={device === audio.currentOutput ? currentDeviceAccessory : undefined}
+            key={device.id}
+            title={device.name}
+            accessories={device.id === audio.currentOutput?.id ? currentDeviceAccessory : undefined}
             actions={
               <ActionPanel>
                 <Action
@@ -158,9 +172,9 @@ export default function Command() {
       <List.Section title="Inputs" subtitle={`${audio?.inputDevices.length ?? 0} devices`}>
         {audio?.inputDevices.map((device) => (
           <List.Item
-            key={`input:${device}`}
-            title={device}
-            accessories={device === audio.currentInput ? currentDeviceAccessory : undefined}
+            key={device.id}
+            title={device.name}
+            accessories={device.id === audio.currentInput?.id ? currentDeviceAccessory : undefined}
             actions={
               <ActionPanel>
                 <Action
@@ -177,24 +191,24 @@ export default function Command() {
     </List>
   );
 
-  async function switchSingleAudioDevice(audio: AudioDeviceState, type: DeviceType, device: string) {
+  async function switchSingleAudioDevice(audio: AudioDeviceState, type: DeviceType, device: AudioDevice) {
     const toast = await showToast({
       style: Toast.Style.Animated,
-      title: `Switching ${type} to ${device}`,
+      title: `Switching ${type} to ${device.name}`,
     });
 
     try {
-      const backend = await createSwitchAudioSourceBackend();
+      const backend = await createMacOSAudioDevicesBackend(AUDIO_DEVICES_BINARY);
       await backend.setDevice(type, device);
       const updatedAudio = markSingleAudioDeviceCurrent(audio, type, device);
       setState({ status: "ready", audio: updatedAudio, isRefreshing: false });
       void cacheAudioDeviceState(updatedAudio);
       toast.style = Toast.Style.Success;
-      toast.title = `Switched ${type} to ${device}`;
+      toast.title = `Switched ${type} to ${device.name}`;
       await closeMainWindow({ clearRootSearch: true });
     } catch (error) {
       toast.style = Toast.Style.Failure;
-      toast.title = `Could not switch ${type} to ${device}`;
+      toast.title = `Could not switch ${type} to ${device.name}`;
       toast.message = error instanceof Error ? error.message : String(error);
     }
   }
@@ -224,9 +238,9 @@ function isAudioDeviceState(value: unknown): value is AudioDeviceState {
     Array.isArray(candidate.pairs) &&
     candidate.pairs.every(isAudioDevicePair) &&
     Array.isArray(candidate.inputDevices) &&
-    candidate.inputDevices.every((device) => typeof device === "string") &&
+    candidate.inputDevices.every(isAudioDevice) &&
     Array.isArray(candidate.outputDevices) &&
-    candidate.outputDevices.every((device) => typeof device === "string")
+    candidate.outputDevices.every(isAudioDevice)
   );
 }
 
@@ -237,9 +251,24 @@ function isAudioDevicePair(value: unknown) {
   return (
     typeof candidate.id === "string" &&
     typeof candidate.displayName === "string" &&
+    isAudioDevice(candidate.input) &&
+    isAudioDevice(candidate.output) &&
     typeof candidate.inputName === "string" &&
     typeof candidate.outputName === "string" &&
     typeof candidate.isCurrent === "boolean"
+  );
+}
+
+function isAudioDevice(value: unknown): value is AudioDevice {
+  if (!value || typeof value !== "object") return false;
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.backendId === "number" &&
+    typeof candidate.uid === "string" &&
+    typeof candidate.name === "string" &&
+    (candidate.type === "input" || candidate.type === "output")
   );
 }
 
@@ -250,19 +279,23 @@ function markAudioPairCurrent(audio: AudioDeviceState, pairId: string): AudioDev
   return {
     ...audio,
     pairs,
-    currentInput: currentPair?.inputName,
-    currentOutput: currentPair?.outputName,
+    currentInput: currentPair?.input,
+    currentOutput: currentPair?.output,
     currentPair,
     isMixedCurrent: false,
   };
 }
 
-function markSingleAudioDeviceCurrent(audio: AudioDeviceState, type: DeviceType, device: string): AudioDeviceState {
+function markSingleAudioDeviceCurrent(
+  audio: AudioDeviceState,
+  type: DeviceType,
+  device: AudioDevice,
+): AudioDeviceState {
   const currentInput = type === "input" ? device : audio.currentInput;
   const currentOutput = type === "output" ? device : audio.currentOutput;
   const pairs = audio.pairs.map((pair) => ({
     ...pair,
-    isCurrent: pair.inputName === currentInput && pair.outputName === currentOutput,
+    isCurrent: pair.input.id === currentInput?.id && pair.output.id === currentOutput?.id,
   }));
   const currentPair = pairs.find((pair) => pair.isCurrent);
 

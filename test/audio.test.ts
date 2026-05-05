@@ -1,20 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   AudioBackend,
+  AudioDevice,
   buildAudioDeviceState,
   normalizeDeviceName,
-  parseDeviceList,
   switchAudioDevicePair,
 } from "../src/audio";
-
-describe("parseDeviceList", () => {
-  it("trims blank lines from SwitchAudioSource output", () => {
-    expect(parseDeviceList("\nMacBook Air Microphone\nPoly Blackwire 3325 Series\n\n")).toEqual([
-      "MacBook Air Microphone",
-      "Poly Blackwire 3325 Series",
-    ]);
-  });
-});
 
 describe("normalizeDeviceName", () => {
   it("normalizes built-in and headphone endpoint suffixes", () => {
@@ -25,15 +16,28 @@ describe("normalizeDeviceName", () => {
 });
 
 describe("buildAudioDeviceState", () => {
-  const inputs = ["Poly Blackwire 3325 Series", "BlackHole 2ch", "MacBook Air Microphone"];
-  const outputs = ["DELL U3415W", "Poly Blackwire 3325 Series", "BlackHole 2ch", "MacBook Air Speakers"];
+  const inputs = [
+    createAudioDevice("input", 1, "Poly Blackwire 3325 Series"),
+    createAudioDevice("input", 2, "BlackHole 2ch"),
+    createAudioDevice("input", 3, "MacBook Air Microphone"),
+  ];
+  const outputs = [
+    createAudioDevice("output", 4, "DELL U3415W"),
+    createAudioDevice("output", 5, "Poly Blackwire 3325 Series"),
+    createAudioDevice("output", 6, "BlackHole 2ch"),
+    createAudioDevice("output", 7, "MacBook Air Speakers"),
+  ];
 
   it("lists only non-virtual paired devices", () => {
-    const state = buildAudioDeviceState(inputs, outputs, "MacBook Air Microphone", "MacBook Air Speakers");
+    const state = buildAudioDeviceState(inputs, outputs, inputs[2], outputs[3]);
 
     expect(state.pairs.map((pair) => pair.displayName)).toEqual(["MacBook Air", "Poly Blackwire 3325 Series"]);
-    expect(state.inputDevices).toEqual(["BlackHole 2ch", "MacBook Air Microphone", "Poly Blackwire 3325 Series"]);
-    expect(state.outputDevices).toEqual([
+    expect(state.inputDevices.map((device) => device.name)).toEqual([
+      "BlackHole 2ch",
+      "MacBook Air Microphone",
+      "Poly Blackwire 3325 Series",
+    ]);
+    expect(state.outputDevices.map((device) => device.name)).toEqual([
       "BlackHole 2ch",
       "DELL U3415W",
       "MacBook Air Speakers",
@@ -42,7 +46,7 @@ describe("buildAudioDeviceState", () => {
   });
 
   it("keeps alphabetical order while marking the current paired device", () => {
-    const state = buildAudioDeviceState(inputs, outputs, "Poly Blackwire 3325 Series", "Poly Blackwire 3325 Series");
+    const state = buildAudioDeviceState(inputs, outputs, inputs[0], outputs[1]);
 
     expect(state.pairs.map((pair) => pair.displayName)).toEqual(["MacBook Air", "Poly Blackwire 3325 Series"]);
     expect(state.pairs[1]).toMatchObject({
@@ -53,7 +57,7 @@ describe("buildAudioDeviceState", () => {
   });
 
   it("marks mixed current devices without pinning partial devices", () => {
-    const state = buildAudioDeviceState(inputs, outputs, "MacBook Air Microphone", "Poly Blackwire 3325 Series");
+    const state = buildAudioDeviceState(inputs, outputs, inputs[2], outputs[1]);
 
     expect(state.isMixedCurrent).toBe(true);
     expect(state.currentPair).toBeUndefined();
@@ -62,8 +66,8 @@ describe("buildAudioDeviceState", () => {
 
   it("groups duplicate normalized names as one item using the first pair", () => {
     const state = buildAudioDeviceState(
-      ["Studio Microphone", "Studio Input"],
-      ["Studio Speakers", "Studio Output"],
+      [createAudioDevice("input", 10, "Studio Microphone"), createAudioDevice("input", 11, "Studio Input")],
+      [createAudioDevice("output", 12, "Studio Speakers"), createAudioDevice("output", 13, "Studio Output")],
       undefined,
       undefined,
     );
@@ -87,16 +91,18 @@ describe("switchAudioDevicePair", () => {
       {
         id: "MacBook Air",
         displayName: "MacBook Air",
+        input: createAudioDevice("input", 1, "MacBook Air Microphone"),
+        output: createAudioDevice("output", 2, "MacBook Air Speakers"),
         inputName: "MacBook Air Microphone",
         outputName: "MacBook Air Speakers",
         isCurrent: false,
       },
-      "Poly Blackwire 3325 Series",
-      "Poly Blackwire 3325 Series",
+      createAudioDevice("input", 3, "Poly Blackwire 3325 Series"),
+      createAudioDevice("output", 4, "Poly Blackwire 3325 Series"),
     );
 
-    expect(setDevice).toHaveBeenNthCalledWith(1, "output", "MacBook Air Speakers");
-    expect(setDevice).toHaveBeenNthCalledWith(2, "input", "MacBook Air Microphone");
+    expect(setDevice).toHaveBeenNthCalledWith(1, "output", createAudioDevice("output", 2, "MacBook Air Speakers"));
+    expect(setDevice).toHaveBeenNthCalledWith(2, "input", createAudioDevice("input", 1, "MacBook Air Microphone"));
   });
 
   it("rolls back previous output and input when switching fails", async () => {
@@ -114,17 +120,19 @@ describe("switchAudioDevicePair", () => {
         {
           id: "MacBook Air",
           displayName: "MacBook Air",
+          input: createAudioDevice("input", 1, "MacBook Air Microphone"),
+          output: createAudioDevice("output", 2, "MacBook Air Speakers"),
           inputName: "MacBook Air Microphone",
           outputName: "MacBook Air Speakers",
           isCurrent: false,
         },
-        "Poly Blackwire 3325 Series",
-        "Poly Blackwire 3325 Series",
+        createAudioDevice("input", 3, "Poly Blackwire 3325 Series"),
+        createAudioDevice("output", 4, "Poly Blackwire 3325 Series"),
       ),
     ).rejects.toThrow("input failed");
 
-    expect(setDevice).toHaveBeenCalledWith("output", "Poly Blackwire 3325 Series");
-    expect(setDevice).toHaveBeenCalledWith("input", "Poly Blackwire 3325 Series");
+    expect(setDevice).toHaveBeenCalledWith("output", createAudioDevice("output", 4, "Poly Blackwire 3325 Series"));
+    expect(setDevice).toHaveBeenCalledWith("input", createAudioDevice("input", 3, "Poly Blackwire 3325 Series"));
   });
 });
 
@@ -133,5 +141,15 @@ function createMockBackend(setDevice: AudioBackend["setDevice"]): AudioBackend {
     listDevices: vi.fn(),
     getCurrentDevice: vi.fn(),
     setDevice,
+  };
+}
+
+function createAudioDevice(type: "input" | "output", backendId: number, name: string): AudioDevice {
+  return {
+    id: `${type}:${backendId}`,
+    backendId,
+    uid: `${type}-${backendId}`,
+    name,
+    type,
   };
 }
